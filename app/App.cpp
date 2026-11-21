@@ -185,34 +185,101 @@ struct Led {
     float pitch() const { return h * 1.20f; }
 };
 
-const ImU32 kLedOn = IM_COL32(255, 84, 42, 255);
+// Lit colour as the eye sees it (photos overexpose these), a brighter core
+// colour for the hotspot, and the bloom colour.
+const ImU32 kLedOn = IM_COL32(228, 38, 22, 255);
+const ImU32 kLedCore = IM_COL32(255, 92, 54, 255);
+const ImU32 kLedBloom = IM_COL32(255, 30, 14, 255);
 const ImU32 kLedUnlit = IM_COL32(47, 10, 8, 255);   // barely visible, as behind the filter
 const ImU32 kLedCell = IM_COL32(42, 9, 7, 255);
 const ImU32 kLedWindow = IM_COL32(20, 4, 3, 255);
 
-// Rectangular segment, sheared to the display's slant.
-void ledSegment(ImDrawList* dl, const Led& L, ImVec2 o, int seg, ImU32 col) {
+ImU32 ledScale(ImU32 c, float f, int alpha = -1) {
+    auto ch = [&](int sh) { return std::min(255, int(((c >> sh) & 0xFF) * f)); };
+    const int a = alpha >= 0 ? alpha : int((c >> 24) & 0xFF);
+    return IM_COL32(ch(0), ch(8), ch(16), a);
+}
+
+// Fixed per-segment "manufacturing" variation: a stable pseudo-random number
+// for each display / digit / segment / corner, so a given LED always looks
+// the same, as on real hardware.
+float ledRand(uint32_t x) {
+    x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16;
+    return (x & 0xFFFF) / 65535.0f;
+}
+
+void ledQuad(ImDrawList* dl, const ImVec2 q[4], const ImU32 c[4]) {
+    dl->PrimReserve(6, 4);
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+    const ImDrawIdx i0 = ImDrawIdx(dl->_VtxCurrentIdx);
+    dl->PrimWriteIdx(i0); dl->PrimWriteIdx(ImDrawIdx(i0 + 1)); dl->PrimWriteIdx(ImDrawIdx(i0 + 2));
+    dl->PrimWriteIdx(i0); dl->PrimWriteIdx(ImDrawIdx(i0 + 2)); dl->PrimWriteIdx(ImDrawIdx(i0 + 3));
+    for (int k = 0; k < 4; ++k) dl->PrimWriteVtx(q[k], uv, c[k]);
+}
+
+// pass 0: bloom (lit segments only); pass 1: segment body.
+void ledSegment(ImDrawList* dl, const Led& L, ImVec2 o, int seg, bool lit, uint32_t seed, int pass) {
     const float w = L.w(), h = L.h, t = L.t(), g = L.gap(), m = h * 0.5f;
     float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
     switch (seg) {
-        case 0: x0 = t + g; x1 = w - t - g; y0 = 0;           y1 = t;           break;  // a
-        case 1: x0 = w - t; x1 = w;         y0 = g;           y1 = m - g * 0.5f; break; // b
-        case 2: x0 = w - t; x1 = w;         y0 = m + g * 0.5f; y1 = h - g;       break;  // c
-        case 3: x0 = t + g; x1 = w - t - g; y0 = h - t;       y1 = h;           break;  // d
-        case 4: x0 = 0;     x1 = t;         y0 = m + g * 0.5f; y1 = h - g;       break;  // e
-        case 5: x0 = 0;     x1 = t;         y0 = g;           y1 = m - g * 0.5f; break; // f
-        case 6: x0 = t + g; x1 = w - t - g; y0 = m - t * 0.5f; y1 = m + t * 0.5f; break; // g
+        case 0: x0 = t + g; x1 = w - t - g; y0 = 0;            y1 = t;            break;
+        case 1: x0 = w - t; x1 = w;         y0 = g;            y1 = m - g * 0.5f; break;
+        case 2: x0 = w - t; x1 = w;         y0 = m + g * 0.5f; y1 = h - g;        break;
+        case 3: x0 = t + g; x1 = w - t - g; y0 = h - t;        y1 = h;            break;
+        case 4: x0 = 0;     x1 = t;         y0 = m + g * 0.5f; y1 = h - g;        break;
+        case 5: x0 = 0;     x1 = t;         y0 = g;            y1 = m - g * 0.5f; break;
+        case 6: x0 = t + g; x1 = w - t - g; y0 = m - t * 0.5f; y1 = m + t * 0.5f; break;
     }
     auto P = [&](float x, float y) { return ImVec2(o.x + x + (h - y) * L.slant(), o.y + y); };
+    auto quad = [&](float a0, float a1, float b0, float b1, ImU32 col) {
+        const ImVec2 q[4] = {P(a0, b0), P(a1, b0), P(a1, b1), P(a0, b1)};
+        dl->AddConvexPolyFilled(q, 4, col);
+    };
+
+    if (pass == 0) {
+        if (!lit) return;
+        // A hint of bloom: two soft, low-alpha halos around the segment.
+        const float e2 = t * 1.1f, e1 = t * 0.5f;
+        quad(x0 - e2, x1 + e2, y0 - e2, y1 + e2, ledScale(kLedBloom, 1, 7));
+        quad(x0 - e1 * 1.4f, x1 + e1 * 1.4f, y0 - e1 * 1.4f, y1 + e1 * 1.4f, ledScale(kLedBloom, 1, 8));
+        quad(x0 - e1 * 0.6f, x1 + e1 * 0.6f, y0 - e1 * 0.6f, y1 + e1 * 0.6f, ledScale(kLedBloom, 1, 12));
+        return;
+    }
+    if (!lit) {
+        quad(x0, x1, y0, y1, kLedUnlit);
+        return;
+    }
+    // Body: each corner a little brighter or dimmer, so the segment is
+    // faintly uneven along its length the way real LED segments are.
+    const float base = 0.86f + 0.10f * ledRand(seed * 7 + 1);
+    ImU32 c[4];
+    for (int k = 0; k < 4; ++k)
+        c[k] = ledScale(kLedOn, base * (0.90f + 0.12f * ledRand(seed * 7 + 2 + k)));
     const ImVec2 q[4] = {P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)};
-    dl->AddConvexPolyFilled(q, 4, col);
+    ledQuad(dl, q, c);
+    // Hotspot: a brighter core along the middle of the segment, off-centre
+    // by a random amount.
+    const bool horiz = (x1 - x0) > (y1 - y0);
+    const float shift = (ledRand(seed * 7 + 6) - 0.5f) * 0.25f;
+    const int a = 22 + int(26 * ledRand(seed * 13 + 3));
+    if (horiz) {
+        const float len = x1 - x0, c0 = x0 + len * (0.12f + shift), c1 = x1 - len * (0.12f - shift);
+        const float th = (y1 - y0) * 0.38f, yc = (y0 + y1) * 0.5f;
+        quad(c0, c1, yc - th, yc + th, ledScale(kLedCore, 1, a));
+    } else {
+        const float len = y1 - y0, c0 = y0 + len * (0.12f + shift), c1 = y1 - len * (0.12f - shift);
+        const float th = (x1 - x0) * 0.38f, xc = (x0 + x1) * 0.5f;
+        quad(xc - th, xc + th, c0, c1, ledScale(kLedCore, 1, a));
+    }
 }
 
 // Draws `cells` digit cells from `o` (top-left of the first cell). `s` may
 // start with '-'. The 8903A's decimal points sit at the bottom LEFT of a
 // digit, so a '.' belongs to the digit that follows it (".0182").
-// Digits are right-aligned in the cells, like the instrument.
-void ledDigits(ImDrawList* dl, const Led& L, ImVec2 o, const std::string& s, int cells) {
+// Digits are right-aligned in the cells, like the instrument. `displayId`
+// keeps each display's LED irregularities distinct and stable.
+void ledDigits(ImDrawList* dl, const Led& L, ImVec2 o, const std::string& s, int cells,
+               uint32_t displayId) {
     struct Cell { char c = ' '; bool dp = false; };
     bool neg = false, pendingDp = false;
     std::vector<Cell> v;
@@ -227,23 +294,44 @@ void ledDigits(ImDrawList* dl, const Led& L, ImVec2 o, const std::string& s, int
     while (int(v.size()) > cells) v.erase(v.begin());
 
     const float digitSpan = L.w() + L.h * L.slant();
+    auto digitOrigin = [&](int i) {
+        const ImVec2 c0(o.x + i * L.pitch(), o.y);
+        return ImVec2(c0.x + (L.cellW() - digitSpan) * 0.5f + L.h * 0.06f,
+                      c0.y + (L.cellH() - L.h) * 0.5f);
+    };
+    auto dpPos = [&](ImVec2 d) { return ImVec2(d.x - L.h * 0.13f, d.y + L.h * 0.97f); };
+    const float dpR = L.h * 0.065f;
+
+    // Cells, then all blooms, then all segment bodies, so halos never sit
+    // on top of a neighbouring segment.
     for (int i = 0; i < cells; ++i) {
         const ImVec2 c0(o.x + i * L.pitch(), o.y);
-        const ImVec2 c1(c0.x + L.cellW(), c0.y + L.cellH());
-        dl->AddRectFilled(c0, c1, kLedCell, 1.5f);
-        const ImVec2 d(c0.x + (L.cellW() - digitSpan) * 0.5f + L.h * 0.06f,
-                       c0.y + (L.cellH() - L.h) * 0.5f);
-        const uint8_t m = segMask(v[i].c);
-        for (int sgi = 0; sgi < 7; ++sgi)
-            ledSegment(dl, L, d, sgi, (m >> sgi) & 1 ? kLedOn : kLedUnlit);
-        // round decimal point, low and to the left of the digit
-        dl->AddCircleFilled(ImVec2(d.x - L.h * 0.13f, d.y + L.h * 0.97f), L.h * 0.065f,
-                            v[i].dp ? kLedOn : kLedUnlit, 16);
+        dl->AddRectFilled(c0, ImVec2(c0.x + L.cellW(), c0.y + L.cellH()), kLedCell, 1.5f);
+    }
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i = 0; i < cells; ++i) {
+            const ImVec2 d = digitOrigin(i);
+            const uint8_t m = segMask(v[i].c);
+            for (int sgi = 0; sgi < 7; ++sgi)
+                ledSegment(dl, L, d, sgi, (m >> sgi) & 1, displayId * 1000u + uint32_t(i) * 16u + uint32_t(sgi), pass);
+            const ImVec2 dp = dpPos(d);
+            if (pass == 0 && v[i].dp) {
+                dl->AddCircleFilled(dp, dpR * 2.2f, ledScale(kLedBloom, 1, 12), 20);
+                dl->AddCircleFilled(dp, dpR * 1.5f, ledScale(kLedBloom, 1, 24), 20);
+            } else if (pass == 1) {
+                dl->AddCircleFilled(dp, dpR, v[i].dp ? ledScale(kLedOn, 0.95f) : kLedUnlit, 16);
+                if (v[i].dp) dl->AddCircleFilled(dp, dpR * 0.55f, ledScale(kLedCore, 1, 40), 12);
+            }
+        }
     }
     // Minus sign: a short bar left of the first cell.
     const float my = o.y + L.cellH() * 0.5f, mx = o.x - L.h * 0.12f;
-    dl->AddRectFilled(ImVec2(mx - L.h * 0.22f, my - L.t() * 0.5f), ImVec2(mx, my + L.t() * 0.5f),
-                      neg ? kLedOn : kLedUnlit);
+    const ImVec2 a(mx - L.h * 0.22f, my - L.t() * 0.5f), b(mx, my + L.t() * 0.5f);
+    if (neg) {
+        const float e = L.t() * 0.5f;
+        dl->AddRectFilled(ImVec2(a.x - e, a.y - e), ImVec2(b.x + e, b.y + e), ledScale(kLedBloom, 1, 22));
+    }
+    dl->AddRectFilled(a, b, neg ? kLedOn : kLedUnlit);
 }
 
 float ledSignW(const Led& L) { return L.h * 0.40f; }
@@ -1205,7 +1293,8 @@ void App::drawCrt(const ImVec2& size, bool big) {
     // `annun` lists the unit labels in rows of `cols`; `lit` is the lit one.
     auto display = [&](bool draw, float x, float yy, float digitH, const char* label,
                        const std::string& digits, const std::vector<std::string>& annun, int cols,
-                       const std::string& lit, bool error, int cells = 4) -> ImVec2 {
+                       const std::string& lit, bool error, int cells = 4,
+                       uint32_t displayId = 0) -> ImVec2 {
         Led L{digitH};
         const float lab = small;
         text(draw, lab, x, yy, greenDim, label);
@@ -1221,7 +1310,7 @@ void App::drawCrt(const ImVec2& size, bool big) {
         const float h = L.cellH() + padIn * 2;
         if (draw) {
             dl->AddRectFilled(ImVec2(x, yy), ImVec2(x + w, yy + h), kLedWindow, 3.0f);
-            ledDigits(dl, L, ImVec2(x + padIn + ledSignW(L), yy + padIn), error ? "Err" : digits, cells);
+            ledDigits(dl, L, ImVec2(x + padIn + ledSignW(L), yy + padIn), error ? "Err" : digits, cells, displayId);
             const float ax0 = x + padIn + digitsW + digitH * 0.35f;
             // annunciators: red LED dot + label
             const int rows = int((annun.size() + cols - 1) / cols);
@@ -1231,7 +1320,9 @@ void App::drawCrt(const ImVec2& size, bool big) {
                 const float ax = ax0 + c * (dot * 2 + annSz * 0.35f + colW + annSz * 0.8f);
                 const float ay = yy + rowH * (r + 1);
                 const bool on = annun[i] == lit && !error;
-                dl->AddCircleFilled(ImVec2(ax + dot, ay), dot, on ? kLedOn : IM_COL32(60, 14, 12, 255));
+                if (on) dl->AddCircleFilled(ImVec2(ax + dot, ay), dot * 1.8f, ledScale(kLedBloom, 1, 22), 20);
+                dl->AddCircleFilled(ImVec2(ax + dot, ay), dot, on ? kLedOn : IM_COL32(58, 13, 11, 255), 20);
+                if (on) dl->AddCircleFilled(ImVec2(ax + dot * 0.85f, ay - dot * 0.15f), dot * 0.45f, ledScale(kLedCore, 1, 50), 12);
                 text(true, annSz, ax + dot * 2 + annSz * 0.35f, ay - annSz * 0.55f, on ? green : greenDim,
                      annun[i]);
             }
@@ -1267,14 +1358,14 @@ void App::drawCrt(const ImVec2& size, bool big) {
         std::string fu;
         const std::string fd = hzDigits(counted ? s.counterHz : s.cfg.freq, &fu);
         const ImVec2 lsz = display(draw, x, yy, dh, counted ? "INPUT FREQUENCY" : "SOURCE FREQUENCY",
-                                   fd, leftAnn, 1, fu, false, 5);
+                                   fd, leftAnn, 1, fu, false, 5, 1);
         const Measurement m1 = kMonitorModes[s.cfg.meas].m;
         std::string u1;
         bool e1;
         const std::string d1 = valueDigits(m1, s.v1, &u1, &e1);
         const float rx = x + lsz.x + gap;
         const ImVec2 rsz = display(draw, rx, yy, dh, kMonitorModes[s.cfg.meas].label, d1, rightAnn, 2,
-                                   u1, e1);
+                                   u1, e1, 4, 2);
         yy += std::max(lsz.y, rsz.y) + small * 0.6f;
 
         // Derived figures for the main reading, under the right display.
@@ -1306,7 +1397,7 @@ void App::drawCrt(const ImVec2& size, bool big) {
                 if (w2 <= lsz.x) break;
                 dh2 *= 0.98f * lsz.x / w2;
             }
-            ly += display(draw, x, ly, dh2, kMonitorModes[s.cfg.meas2].label, d2, rightAnn, 2, u2, e2).y;
+            ly += display(draw, x, ly, dh2, kMonitorModes[s.cfg.meas2].label, d2, rightAnn, 2, u2, e2, 4, 3).y;
             ly += small * 0.4f;
             for (auto& line : derivedLines(m2, s.v2.valid, s.v2.value,
                                            s.cfg.sourceOn ? s.cfg.level : 0, s.cfg.loadOhm)) {
