@@ -151,7 +151,10 @@ std::string fmtHz(double hz) {
 
 
 // ---------------------------------------------------------------------------
-// Seven-segment LED digits, drawn as segments like the 8903's own displays.
+// Seven-segment LED display modelled on the HP 8903A front panel: four
+// digits per display, each in its own dark cell behind the red filter, thin
+// slanted segments with clear gaps, unlit segments hidden by the filter, and
+// small red annunciator LEDs for the units.
 //
 //      aaa
 //     f   b
@@ -171,41 +174,40 @@ uint8_t segMask(char c) {
 }
 
 struct Led {
-    float h;                    // digit height in pixels
-    float w() const { return h * 0.52f; }
-    float t() const { return h * 0.115f; }        // segment thickness
-    float adv() const { return w() + t() * 1.9f; } // cell advance incl. DP room
-    float slant() const { return 0.07f; }
+    float h;                                    // digit height in pixels
+    float w() const { return h * 0.50f; }
+    float t() const { return h * 0.085f; }      // thin HP-style segments
+    float gap() const { return t() * 0.55f; }
+    float slant() const { return 0.17f; }       // ~10 degrees
+    float cellW() const { return h * 0.86f; }   // dark cell behind each digit
+    float adv() const { return cellW() + h * 0.05f; }
 };
 
-// Width of a string of digits (a '.' rides on the previous cell).
-float ledWidth(const Led& L, const std::string& s) {
-    int cells = 0;
-    for (size_t i = 0; i < s.size(); ++i)
-        if (s[i] != '.' || i == 0) ++cells;
-    return cells * L.adv();
-}
+const ImU32 kLedOn = IM_COL32(255, 52, 30, 255);
+const ImU32 kLedUnlit = IM_COL32(40, 8, 7, 255);    // barely visible through the filter
+const ImU32 kLedCell = IM_COL32(33, 7, 6, 255);
+const ImU32 kLedWindow = IM_COL32(14, 3, 3, 255);
 
 void ledSegment(ImDrawList* dl, const Led& L, ImVec2 o, int seg, ImU32 col) {
-    const float w = L.w(), h = L.h, t = L.t(), g = t * 0.18f, ht = t * 0.5f;
+    const float w = L.w(), h = L.h, t = L.t(), g = L.gap(), ht = t * 0.5f;
     ImVec2 p[6];
-    auto H = [&](float y, float x0, float x1) {
+    auto Hs = [&](float y, float x0, float x1) {
         p[0] = {x0, y}; p[1] = {x0 + ht, y - ht}; p[2] = {x1 - ht, y - ht};
         p[3] = {x1, y}; p[4] = {x1 - ht, y + ht}; p[5] = {x0 + ht, y + ht};
     };
-    auto V = [&](float x, float y0, float y1) {
+    auto Vs = [&](float x, float y0, float y1) {
         p[0] = {x, y0}; p[1] = {x + ht, y0 + ht}; p[2] = {x + ht, y1 - ht};
         p[3] = {x, y1}; p[4] = {x - ht, y1 - ht}; p[5] = {x - ht, y0 + ht};
     };
     const float l = ht, r = w - ht, top = ht, mid = h * 0.5f, bot = h - ht;
     switch (seg) {
-        case 0: H(top, l + g, r - g); break;
-        case 1: V(r, top + g, mid - g); break;
-        case 2: V(r, mid + g, bot - g); break;
-        case 3: H(bot, l + g, r - g); break;
-        case 4: V(l, mid + g, bot - g); break;
-        case 5: V(l, top + g, mid - g); break;
-        case 6: H(mid, l + g, r - g); break;
+        case 0: Hs(top, l + g, r - g); break;
+        case 1: Vs(r, top + g, mid - g); break;
+        case 2: Vs(r, mid + g, bot - g); break;
+        case 3: Hs(bot, l + g, r - g); break;
+        case 4: Vs(l, mid + g, bot - g); break;
+        case 5: Vs(l, top + g, mid - g); break;
+        case 6: Hs(mid, l + g, r - g); break;
     }
     for (auto& q : p) {
         q.x = o.x + q.x + (h - q.y) * L.slant();
@@ -214,39 +216,94 @@ void ledSegment(ImDrawList* dl, const Led& L, ImVec2 o, int seg, ImU32 col) {
     dl->AddConvexPolyFilled(p, 6, col);
 }
 
-// Draws right-to-left so a reading stays anchored to the right edge, like
-// the instrument. Returns the left x of the drawn digits.
-float ledDraw(ImDrawList* dl, const Led& L, ImVec2 rightTop, const std::string& s,
-              int minCells, ImU32 on, ImU32 off) {
-    struct Cell { char c; bool dp; };
-    std::vector<Cell> cells;
+// Draws `cells` digit cells starting at `o` (top-left of the first cell's
+// digit). `s` may start with '-', and '.' rides on the previous digit.
+// Digits are right-aligned in the cells, like the instrument.
+void ledDigits(ImDrawList* dl, const Led& L, ImVec2 o, const std::string& s, int cells) {
+    // The 8903A's decimal points sit at the bottom LEFT of a digit, so a '.'
+    // belongs to the digit that follows it (".0182").
+    struct Cell { char c = ' '; bool dp = false; };
+    bool neg = false, pendingDp = false;
+    std::vector<Cell> v;
     for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '.' && !cells.empty() && !cells.back().dp) cells.back().dp = true;
-        else if (s[i] != ' ' || true) cells.push_back({s[i] == '.' ? ' ' : s[i], s[i] == '.'});
+        const char c = s[i];
+        if (c == '-' && i == 0 && s.size() > 1) { neg = true; continue; }
+        if (c == '.') { pendingDp = true; continue; }
+        v.push_back(Cell{c, pendingDp});
+        pendingDp = false;
     }
-    while (int(cells.size()) < minCells) cells.insert(cells.begin(), Cell{' ', false});
-    float x = rightTop.x;
-    for (int i = int(cells.size()) - 1; i >= 0; --i) {
-        x -= L.adv();
-        const ImVec2 o(x, rightTop.y);
-        const uint8_t m = segMask(cells[i].c);
+    while (int(v.size()) < cells) v.insert(v.begin(), Cell{});
+    while (int(v.size()) > cells) v.erase(v.begin());
+
+    const float t = L.t();
+    for (int i = 0; i < cells; ++i) {
+        const float cx = o.x + i * L.adv();
+        // the dark cell (LED package) behind the filter
+        const ImVec2 c0(cx - L.h * 0.12f, o.y - L.h * 0.14f);
+        const ImVec2 c1(cx - L.h * 0.12f + L.cellW(), o.y + L.h * 1.14f);
+        dl->AddRectFilled(c0, c1, kLedCell, 2.0f);
+        const ImVec2 d(cx + L.h * 0.06f, o.y);
+        const uint8_t m = segMask(v[i].c);
         for (int sgi = 0; sgi < 7; ++sgi)
-            ledSegment(dl, L, o, sgi, (m >> sgi) & 1 ? on : off);
-        // decimal point, bottom right of the cell
-        const float t = L.t();
-        const ImVec2 dp(o.x + L.w() + t * 0.85f, o.y + L.h - t * 0.55f);
-        dl->AddCircleFilled(dp, t * 0.55f, cells[i].dp ? on : off);
+            ledSegment(dl, L, d, sgi, (m >> sgi) & 1 ? kLedOn : kLedUnlit);
+        // decimal point at the bottom left of the digit
+        const ImVec2 dp(d.x - t * 1.2f, d.y + L.h - t * 0.5f);
+        dl->AddRectFilled(ImVec2(dp.x - t * 0.5f, dp.y - t * 0.5f),
+                          ImVec2(dp.x + t * 0.5f, dp.y + t * 0.5f),
+                          v[i].dp ? kLedOn : kLedUnlit, t * 0.25f);
     }
-    return x;
+    // Minus sign: a short bar left of the first cell, as on the right display.
+    const ImVec2 ms(o.x - L.h * 0.30f, o.y + L.h * 0.5f);
+    dl->AddRectFilled(ImVec2(ms.x - L.h * 0.10f, ms.y - t * 0.5f),
+                      ImVec2(ms.x + L.h * 0.06f, ms.y + t * 0.5f), neg ? kLedOn : kLedUnlit);
 }
 
-// Splits a frequency into LED digits and a unit.
-std::string hzDigits(double hz, std::string* unit) {
+float ledDigitsWidth(const Led& L, int cells) {
+    return L.h * 0.42f + cells * L.adv();   // includes the sign position
+}
+
+// Four significant digits, the way the 8903 shows them: no leading zero
+// when the value is below 1 and all four cells are needed (".0182").
+std::string fmt4(double v) {
+    const double a = std::fabs(v);
     char b[32];
-    if (hz >= 10000) { std::snprintf(b, sizeof b, "%.2f", hz / 1000); *unit = "kHz"; }
-    else if (hz >= 1000) { std::snprintf(b, sizeof b, "%.3f", hz / 1000); *unit = "kHz"; }
-    else { std::snprintf(b, sizeof b, "%.1f", hz); *unit = "Hz"; }
-    return b;
+    if (a == 0) { std::snprintf(b, sizeof b, "0.000"); return b; }
+    int mag = int(std::floor(std::log10(a)));
+    int dec = std::clamp(3 - mag, 0, 4);
+    std::snprintf(b, sizeof b, "%.*f", dec, a);
+    auto digits = [](const char* s) { int n = 0; for (; *s; ++s) n += (*s >= '0' && *s <= '9'); return n; };
+    std::string s = b;
+    if (s.rfind("0.", 0) == 0) {
+        if (digits(b) > 4) s.erase(0, 1);                       // "0.0049" -> ".0049"
+    } else if (digits(b) > 4 && dec > 0) {                      // rounding carry, 9.9996 -> 10.00
+        std::snprintf(b, sizeof b, "%.*f", dec - 1, a);
+        s = b;
+    }
+    return (v < 0 ? "-" : "") + s;
+}
+
+// LED digits + which annunciator to light, per measurement.
+std::string ledValue(Measurement m, double v, std::string* unit) {
+    switch (m) {
+        case Measurement::AcLevel:
+        case Measurement::DistortionLevel:
+        case Measurement::DcLevel:
+            if (std::fabs(v) < 1) { *unit = "mV"; return fmt4(v * 1e3); }
+            *unit = "V";
+            return fmt4(v);
+        case Measurement::Distortion:
+            *unit = "%";
+            return fmt4(v);
+        default:
+            *unit = "dB";
+            return fmt4(v);
+    }
+}
+
+std::string hzDigits(double hz, std::string* unit) {
+    if (hz >= 1000) { *unit = "kHz"; return fmt4(hz / 1000); }
+    *unit = "Hz";
+    return fmt4(hz);
 }
 
 }  // namespace
@@ -1085,17 +1142,13 @@ void App::drawCrt(const ImVec2& size, bool big) {
     const ImVec2 p1(p0.x + size.x, p0.y + size.y);
     ImFont* f = labelFont_ ? labelFont_ : ImGui::GetFont();
 
-    // Colours: red LEDs as on the 8903; flat green for everything else.
-    const ImU32 ledOn = IM_COL32(255, 40, 32, 255);
-    const ImU32 ledOff = IM_COL32(42, 7, 6, 255);
-    const ImU32 ledWin = IM_COL32(24, 4, 4, 255);
-    const ImU32 ledEdge = IM_COL32(70, 18, 16, 255);
     const ImU32 green = IM_COL32(80, 235, 120, 255);
     const ImU32 greenDim = IM_COL32(52, 165, 88, 255);
     const ImU32 amber = IM_COL32(255, 176, 64, 255);
 
-    dl->AddRectFilled(p0, p1, IM_COL32(10, 10, 11, 255), 10.0f);
-    dl->AddRect(p0, p1, IM_COL32(55, 55, 60, 255), 10.0f, 0, 1.5f);
+    // Charcoal display band, as on the instrument.
+    dl->AddRectFilled(p0, p1, IM_COL32(36, 36, 38, 255), 8.0f);
+    dl->AddRect(p0, p1, IM_COL32(60, 60, 64, 255), 8.0f, 0, 1.5f);
 
     const float W = size.x, H = size.y;
     const float pad = std::max(10.0f, std::min(W, H) * 0.035f);
@@ -1118,7 +1171,7 @@ void App::drawCrt(const ImVec2& size, bool big) {
     // ---------------- header
     float y = p0.y + pad;
     {
-        std::string left = "HP " + std::string(modelName_);
+        std::string left = "HP " + std::string(modelName_) + " AUDIO ANALYZER";
         if (!connected_) left += "   NOT CONNECTED";
         text(true, small, p0.x + pad, y, greenDim, left);
         char r[48];
@@ -1159,97 +1212,117 @@ void App::drawCrt(const ImVec2& size, bool big) {
         footerTop -= small * 0.5f;
     }
 
-    // An LED window: label above, digits right-aligned, unit in green.
-    // Returns the window's height.
-    auto ledWindow = [&](bool draw, float x, float yy, float w, float digitH, const char* label,
-                         const std::string& digits, const std::string& unit, bool error,
-                         int cells) -> float {
+    // One display: black-red window, four digit cells, annunciator column(s).
+    // `annun` lists the unit labels in rows of `cols`; `lit` is the lit one.
+    auto display = [&](bool draw, float x, float yy, float digitH, const char* label,
+                       const std::string& digits, const std::vector<std::string>& annun, int cols,
+                       const std::string& lit, bool error) -> ImVec2 {
+        Led L{digitH};
         const float lab = small;
         text(draw, lab, x, yy, greenDim, label);
-        yy += lab * 1.25f;
-        Led L{digitH};
-        const float padIn = digitH * 0.22f;
-        const float unitSz = std::max(small, digitH * 0.30f);
-        const float h = digitH + padIn * 2;
+        yy += lab * 1.3f;
+        const float padIn = digitH * 0.30f;
+        const float annSz = std::max(small * 0.9f, digitH * 0.20f);
+        float colW = 0;
+        for (auto& a : annun) colW = std::max(colW, width(annSz, a));
+        const float dot = annSz * 0.32f;
+        const float annW = cols * (dot * 2 + annSz * 0.35f + colW) + (cols - 1) * annSz * 0.8f;
+        const float digitsW = ledDigitsWidth(L, 4);
+        const float w = padIn + digitsW + padIn * 0.8f + annW + padIn;
+        const float h = digitH * 1.28f + padIn * 2 * 0.6f;
         if (draw) {
-            dl->AddRectFilled(ImVec2(x, yy), ImVec2(x + w, yy + h), ledWin, 6.0f);
-            dl->AddRect(ImVec2(x, yy), ImVec2(x + w, yy + h), ledEdge, 6.0f, 0, 1.5f);
-            const float unitW = std::max(width(unitSz, unit), width(unitSz, "kHz"));
-            const float right = x + w - padIn - unitW - padIn * 0.6f;
-            ledDraw(dl, L, ImVec2(right, yy + padIn), digits, cells, error ? ledOn : ledOn, ledOff);
-            text(true, unitSz, x + w - padIn - unitW, yy + padIn + digitH - unitSz * 1.05f,
-                 error ? amber : green, unit);
+            dl->AddRectFilled(ImVec2(x, yy), ImVec2(x + w, yy + h), kLedWindow, 3.0f);
+            const float dy = yy + (h - digitH) * 0.5f;
+            ledDigits(dl, L, ImVec2(x + padIn + L.h * 0.42f, dy), error ? "Err" : digits, 4);
+            // annunciators: red LED dot + label
+            const int rows = int((annun.size() + cols - 1) / cols);
+            const float ax0 = x + padIn + digitsW + padIn * 0.8f;
+            const float rowH = h / (rows + 1);
+            for (size_t i = 0; i < annun.size(); ++i) {
+                const int c = int(i) % cols, r = int(i) / cols;
+                const float ax = ax0 + c * (dot * 2 + annSz * 0.35f + colW + annSz * 0.8f);
+                const float ay = yy + rowH * (r + 1);
+                const bool on = annun[i] == lit && !error;
+                dl->AddCircleFilled(ImVec2(ax + dot, ay), dot, on ? kLedOn : IM_COL32(60, 14, 12, 255));
+                text(true, annSz, ax + dot * 2 + annSz * 0.35f, ay - annSz * 0.55f, on ? green : greenDim,
+                     annun[i]);
+            }
         }
-        return lab * 1.25f + h;
-    };
-    // Largest digit height for which `cells` digits plus a unit fit in w.
-    auto digitFor = [&](float w, int cells, float want) {
-        Led L{want};
-        const float unitSz = std::max(small, want * 0.30f);
-        const float need = cells * L.adv() + want * 0.22f * 2.6f + width(unitSz, "kHz");
-        return need > w ? want * w / need : want;
+        return ImVec2(w, lab * 1.3f + h);
     };
     auto valueDigits = [&](Measurement m, const MonValue& v, std::string* unit, bool* err) {
         *err = false;
-        if (v.valid) return displayValue(m, v.value, unit);
-        if (v.has) { *err = true; *unit = "ERR"; return std::string("Err"); }
+        if (v.valid) return ledValue(m, v.value, unit);
+        if (v.has) { *err = true; unit->clear(); return std::string("Err"); }
         unit->clear();
-        return std::string("----");
+        return std::string("");
     };
+    const std::vector<std::string> leftAnn = {"kHz", "Hz"};
+    const std::vector<std::string> rightAnn = {"dB", "V", "%", "mV"};
 
     // ---------------- body, measured then drawn scaled to fit
     auto body = [&](float k, bool draw) -> float {
         float yy = y;
         const float x = p0.x + pad;
-        const float gap = pad;
-        const float half = (innerW - gap) * 0.5f;
-        const int cells = 6;
+        const float gap = pad * 1.2f;
 
-        // Row 1: left display (frequency) and right display (measurement),
-        // side by side as on the front panel.
-        const float dh = digitFor(half, cells, H * 0.20f * k);
+        // Row 1: left display (frequency) and right display (measurement).
+        // Size the digits so both windows fit side by side.
+        float dh = H * 0.20f * k;
+        for (int it = 0; it < 6; ++it) {   // label sizes have a floor, so iterate
+            const float wl = display(false, 0, 0, dh, "", "", leftAnn, 1, "", false).x;
+            const float wr = display(false, 0, 0, dh, "", "", rightAnn, 2, "", false).x;
+            if (wl + gap + wr <= innerW) break;
+            dh *= 0.98f * innerW / (wl + gap + wr);
+        }
         const bool counted = !std::isnan(s.counterHz);
         std::string fu;
         const std::string fd = hzDigits(counted ? s.counterHz : s.cfg.freq, &fu);
-        const float rowH = ledWindow(draw, x, yy, half, dh,
-                                     counted ? "INPUT FREQUENCY" : "SOURCE FREQUENCY", fd, fu,
-                                     false, cells);
+        const ImVec2 lsz = display(draw, x, yy, dh, counted ? "INPUT FREQUENCY" : "SOURCE FREQUENCY",
+                                   fd, leftAnn, 1, fu, false);
         const Measurement m1 = kMonitorModes[s.cfg.meas].m;
         std::string u1;
         bool e1;
         const std::string d1 = valueDigits(m1, s.v1, &u1, &e1);
-        ledWindow(draw, x + half + gap, yy, half, dh, kMonitorModes[s.cfg.meas].label, d1, u1, e1,
-                  cells);
-        yy += rowH + small * 0.5f;
+        const float rx = x + lsz.x + gap;
+        const ImVec2 rsz = display(draw, rx, yy, dh, kMonitorModes[s.cfg.meas].label, d1, rightAnn, 2,
+                                   u1, e1);
+        yy += std::max(lsz.y, rsz.y) + small * 0.6f;
 
         // Derived figures for the main reading, under the right display.
         float dy = yy;
+        const float colW = std::max(rsz.x, innerW - (rx - x));
         if (e1 && !s.v1.raw.empty()) {
-            const float dsz = fit(small * 1.1f * std::max(k, 0.6f), "instrument returned " + s.v1.raw, half);
-            text(draw, dsz, x + half + gap, dy, amber, "instrument returned " + s.v1.raw);
+            const std::string t = "instrument returned " + s.v1.raw;
+            const float dsz = fit(small * 1.1f * std::max(k, 0.6f), t, colW);
+            text(draw, dsz, rx, dy, amber, t);
             dy += dsz * 1.3f;
         }
         for (auto& line : derivedLines(m1, s.v1.valid, s.v1.value, s.cfg.sourceOn ? s.cfg.level : 0,
                                        s.cfg.loadOhm)) {
-            const float dsz = fit(small * 1.15f * std::max(k, 0.6f), line, half);
-            text(draw, dsz, x + half + gap, dy, green, line);
+            const float dsz = fit(small * 1.15f * std::max(k, 0.6f), line, colW);
+            text(draw, dsz, rx, dy, green, line);
             dy += dsz * 1.3f;
         }
 
-        // Row 2: second reading in a smaller LED window on the left.
+        // Row 2: second reading, smaller, under the left display.
         float ly = yy;
         if (s.cfg.meas2 >= 0 && s.cfg.meas2 != s.cfg.meas) {
             const Measurement m2 = kMonitorModes[s.cfg.meas2].m;
             std::string u2;
             bool e2;
             const std::string d2 = valueDigits(m2, s.v2, &u2, &e2);
-            const float dh2 = digitFor(half, cells, dh * 0.62f);
-            ly += ledWindow(draw, x, ly, half, dh2, kMonitorModes[s.cfg.meas2].label, d2, u2, e2,
-                            cells);
+            float dh2 = dh * 0.62f;
+            for (int it = 0; it < 6; ++it) {
+                const float w2 = display(false, 0, 0, dh2, "", "", rightAnn, 2, "", false).x;
+                if (w2 <= lsz.x) break;
+                dh2 *= 0.98f * lsz.x / w2;
+            }
+            ly += display(draw, x, ly, dh2, kMonitorModes[s.cfg.meas2].label, d2, rightAnn, 2, u2, e2).y;
             ly += small * 0.4f;
             for (auto& line : derivedLines(m2, s.v2.valid, s.v2.value,
                                            s.cfg.sourceOn ? s.cfg.level : 0, s.cfg.loadOhm)) {
-                const float dsz = fit(small * 1.05f * std::max(k, 0.6f), line, half);
+                const float dsz = fit(small * 1.05f * std::max(k, 0.6f), line, lsz.x);
                 text(draw, dsz, x, ly, green, line);
                 ly += dsz * 1.3f;
             }
