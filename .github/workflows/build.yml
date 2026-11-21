@@ -59,6 +59,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
+          sleep 5   # let the tag deletion settle before re-creating it
           gh release create latest dist/HP8903-mac.zip dist/hp8903-cli \
             --target "${{ github.sha }}" --prerelease \
             --title "Latest build ($(echo ${{ github.sha }} | cut -c1-7))" \
@@ -69,3 +70,5 @@ jobs:
           3. Open it. Pick 'Simulated HP 8903' to try it without hardware.
 
           hp8903-cli is the command-line tester (chmod +x hp8903-cli first)."
+          # make sure it isn't left as a draft
+          gh release edit latest --draft=false --prerelease
