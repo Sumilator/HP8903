@@ -92,9 +92,28 @@ tools/           hp8903-cli
 tests/           packet-framing, parser and sweep tests (no hardware needed)
 ```
 
+## Front-panel display
+
+The **Monitor** tab has a CRT-style readout of the 8903 that you can read from
+across the bench. It shows a main reading plus an optional second one that
+alternates with it (for example THD+N and AC level), and figures derived from
+them:
+
+* AC level: dBV, dBu, power into a set load, gain re the source level.
+* THD+N: dB, the SINAD equivalent, ppm.
+* SINAD: the THD+N % equivalent.
+* Min, max and average.
+
+**Big display**, or double-clicking the display, fills the window. **F**
+toggles full screen and **Esc** goes back. *Read frequency counter* reads the
+8903's left display using RL/RR. These codes are documented for the 8903B, and
+if an 8903A doesn't answer, the display shows the source frequency instead.
+
 ## Licence
 
 GPL-2.0. The NI GPIB-USB protocol is ported from the Linux kernel driver
 `drivers/gpib/ni_usb/ni_usb_gpib.c`, © 2004 Frank Mori Hess, GPL-2.0.
+The VT323 font (app/fonts) is by The VT323 Project Authors, SIL Open Font
+Licence 1.1 (see app/fonts/VT323-OFL.txt).
 The 8903 measurement sequences follow Pete Millett's VEE programs, as
 documented by pvdm's Python port. No code from either was copied.

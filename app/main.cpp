@@ -24,6 +24,8 @@
 #include "stb_image_write.h"
 
 #include "font_roboto.h"   // generated at build time
+#include "font_mono.h"
+#include "font_vt323.h"
 
 #include <cstdio>
 #include <vector>
@@ -113,12 +115,30 @@ int main(int, char**) {
     ImFontConfig fc;
     fc.FontDataOwnedByAtlas = false;
     io.Fonts->AddFontFromMemoryTTF((void*)kRobotoTtf, int(sizeof kRobotoTtf), 15.0f, &fc);
+    ImFont* mono = io.Fonts->AddFontFromMemoryTTF((void*)kMonoTtf, int(sizeof kMonoTtf), 15.0f, &fc);
+    ImFont* vt = io.Fonts->AddFontFromMemoryTTF((void*)kVt323Ttf, int(sizeof kVt323Ttf), 15.0f, &fc);
 
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init(glsl);
 
     {
         App app;
+        app.setFonts(mono, vt);
+        bool fullscreen = false;
+        int wx = 0, wy = 0, ww = 1280, wh = 800;
+        auto setFullscreen = [&](bool on) {
+            if (on == fullscreen) return;
+            if (on) {
+                glfwGetWindowPos(win, &wx, &wy);
+                glfwGetWindowSize(win, &ww, &wh);
+                GLFWmonitor* mon = glfwGetPrimaryMonitor();
+                const GLFWvidmode* mode = glfwGetVideoMode(mon);
+                glfwSetWindowMonitor(win, mon, 0, 0, mode->width, mode->height, mode->refreshRate);
+            } else {
+                glfwSetWindowMonitor(win, nullptr, wx, wy, ww, wh, 0);
+            }
+            fullscreen = on;
+        };
         while (!glfwWindowShouldClose(win)) {
             glfwPollEvents();
             if (glfwGetWindowAttrib(win, GLFW_ICONIFIED)) {
@@ -142,6 +162,8 @@ int main(int, char**) {
                 if (savePng(p, w, h)) app.screenshotSaved(p);
             }
             if (app.selfTestDone()) glfwSetWindowShouldClose(win, 1);
+            if (app.takeFullscreenToggle()) setFullscreen(!fullscreen);
+            if (fullscreen && !app.bigDisplay()) setFullscreen(false);
             glfwSwapBuffers(win);
         }
     }   // App destructor stops jobs and releases the instrument

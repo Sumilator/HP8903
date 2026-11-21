@@ -5,6 +5,7 @@
 #include "implot.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <iterator>
 #include <cmath>
@@ -66,6 +67,88 @@ void helpMarker(const char* text) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Derived values shown under the main readings.
+
+std::vector<std::string> derivedLines(Measurement m, bool valid, double x,
+                                      double sourceV, double loadOhm) {
+    std::vector<std::string> out;
+    if (!valid) return out;
+    char b[160];
+    switch (m) {
+        case Measurement::AcLevel:
+        case Measurement::DistortionLevel:
+            if (x > 0) {
+                std::snprintf(b, sizeof b, "%+.2f dBV   %+.2f dBu", 20 * std::log10(x),
+                              20 * std::log10(x / 0.774597));
+                out.push_back(b);
+            }
+            if (m == Measurement::AcLevel && loadOhm > 0) {
+                const double w = x * x / loadOhm;
+                if (w < 1) std::snprintf(b, sizeof b, "%.3f mW into %g ohm", w * 1e3, loadOhm);
+                else std::snprintf(b, sizeof b, "%.3f W into %g ohm", w, loadOhm);
+                out.push_back(b);
+            }
+            if (m == Measurement::AcLevel && sourceV > 0 && x > 0) {
+                std::snprintf(b, sizeof b, "Gain %+.2f dB (x%.3f) re source", 20 * std::log10(x / sourceV),
+                              x / sourceV);
+                out.push_back(b);
+            }
+            break;
+        case Measurement::Distortion:
+            if (x > 0) {
+                const double db = 20 * std::log10(x / 100);
+                std::snprintf(b, sizeof b, "%.1f dB   =   SINAD %.1f dB   (%.0f ppm)", db, -db, x * 1e4);
+                out.push_back(b);
+            }
+            break;
+        case Measurement::Sinad:
+            std::snprintf(b, sizeof b, "=   THD+N %.4f %%", 100 * std::pow(10.0, -x / 20));
+            out.push_back(b);
+            break;
+        case Measurement::SignalToNoise:
+            std::snprintf(b, sizeof b, "noise %.4f %% of signal", 100 * std::pow(10.0, -x / 20));
+            out.push_back(b);
+            break;
+        case Measurement::DcLevel:
+            break;
+    }
+    return out;
+}
+
+// The 8903 shows 4 significant digits; mirror that.
+std::string displayValue(Measurement m, double v, std::string* unitOut) {
+    char b[48];
+    const double a = std::fabs(v);
+    switch (m) {
+        case Measurement::AcLevel:
+        case Measurement::DistortionLevel:
+        case Measurement::DcLevel:
+            if (a < 1e-3) { std::snprintf(b, sizeof b, "%.2f", v * 1e6); *unitOut = "uV"; }
+            else if (a < 1) { std::snprintf(b, sizeof b, a < 0.01 ? "%.3f" : a < 0.1 ? "%.2f" : "%.1f", v * 1e3); *unitOut = "mV"; }
+            else { std::snprintf(b, sizeof b, a < 10 ? "%.4f" : "%.3f", v); *unitOut = "V"; }
+            break;
+        case Measurement::Distortion:
+            std::snprintf(b, sizeof b, a < 0.01 ? "%.5f" : a < 0.1 ? "%.4f" : a < 1 ? "%.3f" : "%.2f", v);
+            *unitOut = "%";
+            break;
+        default:
+            std::snprintf(b, sizeof b, "%.2f", v);
+            *unitOut = "dB";
+            break;
+    }
+    return b;
+}
+
+std::string fmtHz(double hz) {
+    char b[32];
+    if (hz >= 10000) std::snprintf(b, sizeof b, "%.2f kHz", hz / 1000);
+    else if (hz >= 1000) std::snprintf(b, sizeof b, "%.3f kHz", hz / 1000);
+    else std::snprintf(b, sizeof b, "%.1f Hz", hz);
+    return b;
+}
+
+
 }  // namespace
 
 // ===========================================================================
@@ -98,6 +181,7 @@ void App::selfTestStep() {
         return SweepKind::FrequencyResponse;
     };
     static const char* tabs[] = {"fr", "thd", "volt", "power", "monitor"};
+    if (selfTest_ == "panel") forceTab_ = 4;
     for (int i = 0; i < 5; ++i) if (selfTest_ == tabs[i]) forceTab_ = i;
     switch (selfTestStage_) {
         case 0:
@@ -108,8 +192,13 @@ void App::selfTestStep() {
             break;
         case 1:
             if (connected_ && !worker_->busy()) {
-                if (selfTest_ == "monitor") {
+                if (selfTest_ == "monitor" || selfTest_ == "panel") {
                     mon_.meas = 1;
+                    mon_.meas2 = 0;
+                    mon_.level = 1.2;
+                    mon_.hp = PlugIn::Right;
+                    mon_.lp = LowPass::LP30k;
+                    if (selfTest_ == "panel") bigDisplay_ = true;
                     startMonitor();
                     selfTestStage_ = 4;
                     selfTestFrame_ = 0;
@@ -190,6 +279,16 @@ void App::loadSettings() {
     std::snprintf(h1Name_, sizeof h1Name_, "%s", settings_.get("h1Name", "400 Hz HP").c_str());
     std::snprintf(h2Name_, sizeof h2Name_, "%s", settings_.get("h2Name", "A-weighting").c_str());
     std::snprintf(modelName_, sizeof modelName_, "%s", settings_.get("model", "8903A").c_str());
+    crtStyle_ = std::clamp(int(settings_.num("crtStyle", 0)), 0, 1);
+    mon_.freq = settings_.num("mon.freq", mon_.freq);
+    mon_.level = settings_.num("mon.level", mon_.level);
+    mon_.meas = std::clamp(int(settings_.num("mon.meas", 0)), 0, int(std::size(kMonitorModes)) - 1);
+    mon_.meas2 = std::clamp(int(settings_.num("mon.meas2", -1)), -1, int(std::size(kMonitorModes)) - 1);
+    mon_.loadOhm = settings_.num("mon.load", mon_.loadOhm);
+    mon_.readCounter = settings_.num("mon.counter", 0) > 0;
+    mon_.lp = LowPass(int(settings_.num("mon.lp", 0)));
+    mon_.hp = PlugIn(int(settings_.num("mon.hp", 0)));
+    ms_.cfg = mon_;
     for (int k = 0; k < kKinds; ++k) {
         auto& c = cfg_[k];
         std::string p = "k" + std::to_string(k) + ".";
@@ -219,6 +318,15 @@ void App::saveSettings() {
     settings_.set("h1Name", std::string(h1Name_));
     settings_.set("h2Name", std::string(h2Name_));
     settings_.set("model", std::string(modelName_));
+    settings_.set("crtStyle", double(crtStyle_));
+    settings_.set("mon.freq", mon_.freq);
+    settings_.set("mon.level", mon_.level);
+    settings_.set("mon.meas", double(mon_.meas));
+    settings_.set("mon.meas2", double(mon_.meas2));
+    settings_.set("mon.load", mon_.loadOhm);
+    settings_.set("mon.counter", mon_.readCounter ? 1.0 : 0.0);
+    settings_.set("mon.lp", double(int(mon_.lp)));
+    settings_.set("mon.hp", double(int(mon_.hp)));
     for (int k = 0; k < kKinds; ++k) {
         const auto& c = cfg_[k];
         std::string p = "k" + std::to_string(k) + ".";
@@ -350,12 +458,22 @@ void App::startSweep(SweepKind kind, int t) {
     });
 }
 
+void App::resetStats() {
+    // Caller holds data_.
+    ms_.n = 0;
+    ms_.sum = ms_.mn = ms_.mx = 0;
+    monHistory_.clear();
+}
+
 void App::startMonitor() {
     if (!connected_ || worker_->busy()) return;
     monitoring_ = true;
     {
         std::lock_guard<std::mutex> lk(data_);
-        monHistory_.clear();
+        resetStats();
+        ms_.v1 = ms_.v2 = MonValue{};
+        ms_.counterHz = NAN;
+        ms_.counterFailed = false;
     }
     ++monVersion_;
     log("Monitor running.");
@@ -363,12 +481,30 @@ void App::startMonitor() {
         int seen = -1;
         MonitorCfg c;
         double settle = 0;
+        using clock = std::chrono::steady_clock;
+        auto readOne = [&](Measurement m, double st) {
+            MonValue v;
+            v.has = true;
+            try {
+                Reading r = analyzer_->measure(m, st);
+                v.valid = r.valid;
+                v.value = r.value;
+                v.raw = r.raw;
+            } catch (const gpib::Timeout& e) {
+                v.raw = e.what();
+            }
+            return v;
+        };
         try {
             while (monitoring_) {
                 if (monVersion_ != seen) {
                     {
                         std::lock_guard<std::mutex> lk(data_);
                         c = mon_;
+                        resetStats();
+                        ms_.v2 = MonValue{};
+                        ms_.cfg = c;
+                        if (!c.readCounter) ms_.counterHz = NAN;
                     }
                     seen = monVersion_;
                     analyzer_->setTrigger(trigger_);
@@ -378,26 +514,55 @@ void App::startMonitor() {
                     if (c.sourceOn) analyzer_->setAmplitude(c.level);
                     else analyzer_->sourceOff();
                     settle = 0.3;
-                    std::lock_guard<std::mutex> lk(data_);
-                    monHistory_.clear();
                 }
-                const Measurement m = kMonitorModes[c.meas].m;
-                Reading r;
-                try {
-                    r = analyzer_->measure(m, settle);
-                } catch (const gpib::Timeout& e) {
-                    r.raw = e.what();
-                }
+                auto t0 = clock::now();
+                MonValue v1 = readOne(kMonitorModes[c.meas].m, settle);
+                MonValue v2;
+                if (c.meas2 >= 0 && c.meas2 != c.meas)
+                    v2 = readOne(kMonitorModes[c.meas2].m, 0.05);
                 settle = 0;
+
+                // Left display (input frequency counter): RL selects it for
+                // output, RR switches back. HP documents this for the 8903B;
+                // if the 8903A doesn't answer sensibly we stop asking.
+                double hz = NAN;
+                bool counterFailed = false;
+                if (c.readCounter) {
+                    try {
+                        analyzer_->send("RL");
+                        Reading r = Analyzer::parse(analyzer_->readRaw(5.0));
+                        analyzer_->send("RR");
+                        if (r.valid && r.value >= 10 && r.value <= 150000) hz = r.value;
+                        else counterFailed = true;
+                    } catch (const std::exception&) {
+                        counterFailed = true;
+                        try { analyzer_->send("RR"); } catch (...) {}
+                    }
+                }
+                const double dt = std::chrono::duration<double>(clock::now() - t0).count();
+
                 std::lock_guard<std::mutex> lk(data_);
-                monValid_ = r.valid;
-                if (r.valid) {
-                    monLast_ = r.value;
-                    monReading_ = fmtEng(r.value, unit(m, false));
-                    monHistory_.push_back(r.value);
+                ms_.v1 = v1;
+                if (v2.has) ms_.v2 = v2;
+                ms_.rate = dt > 0 ? 1.0 / dt : 0;
+                if (c.readCounter) {
+                    if (counterFailed) {
+                        ms_.counterFailed = true;
+                        mon_.readCounter = c.readCounter = false;
+                        status_ = "This 8903 did not answer the frequency-counter read (RL); "
+                                  "showing the source frequency instead.";
+                    } else {
+                        ms_.counterHz = hz;
+                    }
+                }
+                if (v1.valid) {
+                    if (ms_.n == 0) ms_.mn = ms_.mx = v1.value;
+                    ms_.mn = std::min(ms_.mn, v1.value);
+                    ms_.mx = std::max(ms_.mx, v1.value);
+                    ms_.sum += v1.value;
+                    ++ms_.n;
+                    monHistory_.push_back(v1.value);
                     if (monHistory_.size() > 300) monHistory_.erase(monHistory_.begin());
-                } else {
-                    monReading_ = r.raw.empty() ? "no reading" : r.describe();
                 }
             }
             analyzer_->sourceOff();
@@ -479,6 +644,20 @@ void App::frame() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
+    if (bigDisplay_) {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 6));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 1));
+        ImGui::Begin("HP 8903 display", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
+        drawCrt(ImGui::GetContentRegionAvail(), true);
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) bigDisplay_ = false;
+        if (ImGui::IsKeyPressed(ImGuiKey_F)) fullscreenToggle_ = true;
+        ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+        return;
+    }
     ImGui::Begin("HP 8903", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
@@ -793,6 +972,198 @@ void App::drawPlot(SweepKind kind) {
     ImPlot::EndPlot();
 }
 
+void App::drawCrt(const ImVec2& size, bool big) {
+    MonState s;
+    {
+        std::lock_guard<std::mutex> lk(data_);
+        s = ms_;
+        if (!monitoring_ && !s.v1.has) s.cfg = mon_;
+    }
+    const std::string h1 = h1Name_, h2 = h2Name_;
+    const bool running = monitoring_;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + size.x, p0.y + size.y);
+    ImFont* f = (crtStyle_ == 0 ? vtFont_ : monoFont_);
+    if (!f) f = ImGui::GetFont();
+    // VT323 is drawn small for its point size; give it more height.
+    const float fs = crtStyle_ == 0 ? 1.25f : 1.0f;
+
+    const ImU32 bright = IM_COL32(100, 255, 140, 255);
+    const ImU32 mid = IM_COL32(64, 210, 104, 255);
+    const ImU32 dim = IM_COL32(40, 140, 74, 255);
+    const ImU32 warn = IM_COL32(255, 176, 64, 255);
+
+    dl->AddRectFilled(p0, p1, IM_COL32(2, 8, 4, 255), 10.0f);
+    // faint phosphor bloom in the middle of the tube, fading out top and bottom
+    {
+        const ImU32 c0 = IM_COL32(12, 34, 18, 0), c1 = IM_COL32(12, 34, 18, 70);
+        const float ym = p0.y + size.y * 0.5f;
+        dl->AddRectFilledMultiColor(ImVec2(p0.x + 4, p0.y + size.y * 0.15f), ImVec2(p1.x - 4, ym),
+                                    c0, c0, c1, c1);
+        dl->AddRectFilledMultiColor(ImVec2(p0.x + 4, ym), ImVec2(p1.x - 4, p0.y + size.y * 0.85f),
+                                    c1, c1, c0, c0);
+    }
+    dl->AddRect(p0, p1, IM_COL32(30, 70, 40, 255), 10.0f, 0, 2.0f);
+
+    const float W = size.x, H = size.y;
+    const float pad = std::max(10.0f, std::min(W, H) * 0.035f);
+    const float innerW = W - 2 * pad;
+    auto width = [&](float sz, const std::string& t) {
+        return f->CalcTextSizeA(sz, FLT_MAX, 0, t.c_str()).x;
+    };
+    auto fit = [&](float want, const std::string& t, float maxW) {
+        float w = width(want, t);
+        return w > maxW ? want * maxW / w : want;
+    };
+    auto text = [&](bool draw, float sz, float x, float y, ImU32 col, const std::string& t,
+                    bool glow) {
+        if (!draw || t.empty()) return;
+        ImVec2 p(x, y);
+        if (glow) {
+            const ImU32 g1 = (col & 0x00FFFFFF) | (0x1Cu << 24);
+            const ImU32 g2 = (col & 0x00FFFFFF) | (0x0Cu << 24);
+            const float o = std::max(1.0f, sz * 0.02f);
+            for (int i = 0; i < 8; ++i) {
+                const float a = i * 3.14159265f / 4;
+                dl->AddText(f, sz, ImVec2(x + std::cos(a) * o, y + std::sin(a) * o), g1, t.c_str());
+                dl->AddText(f, sz, ImVec2(x + std::cos(a) * o * 2.5f, y + std::sin(a) * o * 2.5f), g2, t.c_str());
+            }
+        }
+        dl->AddText(f, sz, p, col, t.c_str());
+    };
+
+    const float small = std::clamp(H * 0.045f, 12.0f, 40.0f) * fs;
+    const char* lps[] = {"LP off", "30 kHz LP", "80 kHz LP"};
+    const std::string hpName = s.cfg.hp == PlugIn::Off ? "HP off" : s.cfg.hp == PlugIn::Left ? h1 : h2;
+
+    // ---------------- header (fixed size)
+    float y = p0.y + pad;
+    {
+        std::string left = "HP " + std::string(modelName_);
+        if (!connected_) left += "   NOT CONNECTED";
+        text(true, small, p0.x + pad, y, dim, left, false);
+        char r[48];
+        if (running) std::snprintf(r, sizeof r, "RUN  %.1f rdg/s", s.rate);
+        else std::snprintf(r, sizeof r, "HOLD");
+        text(true, small, p1.x - pad - width(small, r), y, running ? mid : warn, r, false);
+        if (big) {
+            const std::string hint = "Esc: back   F: full screen";
+            text(true, small * 0.8f, p1.x - pad - width(small * 0.8f, hint), y + small * 1.3f, dim, hint, false);
+        }
+        y += small * 1.5f;
+    }
+
+    // ---------------- footer (fixed size), drawn bottom-up
+    float footerTop = p1.y - pad;
+    {
+        char b[220];
+        if (s.cfg.sourceOn)
+            std::snprintf(b, sizeof b, "SRC %.4f V  %s   |  %s  |  %s", s.cfg.level,
+                          fmtHz(s.cfg.freq).c_str(), lps[int(s.cfg.lp)], hpName.c_str());
+        else
+            std::snprintf(b, sizeof b, "SRC OFF   |  %s  |  %s", lps[int(s.cfg.lp)], hpName.c_str());
+        float sz = fit(small, b, innerW);
+        footerTop -= sz;
+        text(true, sz, p0.x + pad, footerTop, dim, b, false);
+        if (s.n > 1) {
+            const Measurement m1 = kMonitorModes[s.cfg.meas].m;
+            std::string u;
+            std::string mn = displayValue(m1, s.mn, &u), mx = displayValue(m1, s.mx, &u),
+                        av = displayValue(m1, s.sum / s.n, &u);
+            std::snprintf(b, sizeof b, "MIN %s  MAX %s  AVG %s %s   (%d)", mn.c_str(), mx.c_str(),
+                          av.c_str(), u.c_str(), s.n);
+            sz = fit(small, b, innerW);
+            footerTop -= sz * 1.3f;
+            text(true, sz, p0.x + pad, footerTop, mid, b, false);
+        }
+        footerTop -= small * 0.4f;
+    }
+
+    // ---------------- body: laid out once to measure, then drawn scaled to fit
+    auto body = [&](float k, bool draw) -> float {
+        float yy = y;
+        const float x = p0.x + pad;
+        // left display: frequency
+        {
+            const bool counted = !std::isnan(s.counterHz);
+            const double hz = counted ? s.counterHz : s.cfg.freq;
+            text(draw, small * k, x, yy, dim, counted ? "INPUT FREQUENCY" : "SOURCE FREQUENCY", false);
+            yy += small * k * 1.15f;
+            const std::string t = fmtHz(hz);
+            const float sz = fit(H * 0.11f * fs * k, t, innerW);
+            text(draw, sz, x, yy, mid, t, true);
+            yy += sz * 1.1f;
+        }
+        // right display: main reading
+        const Measurement m1 = kMonitorModes[s.cfg.meas].m;
+        {
+            text(draw, small * k, x, yy, dim, kMonitorModes[s.cfg.meas].label, false);
+            yy += small * k * 1.1f;
+            std::string unitStr, val;
+            ImU32 col = bright;
+            if (s.v1.valid) {
+                val = displayValue(m1, s.v1.value, &unitStr);
+            } else if (s.v1.has) {
+                val = "ERROR";
+                unitStr = s.v1.raw.size() < 24 ? s.v1.raw : "";
+                col = warn;
+            } else {
+                val = "- - - -";
+            }
+            const float unitRatio = 0.38f;
+            float sz = H * (s.cfg.meas2 >= 0 ? 0.32f : 0.42f) * fs * k;
+            const float total = width(sz, val) + width(sz * unitRatio, " " + unitStr);
+            if (total > innerW) sz *= innerW / total;
+            text(draw, sz, x, yy, col, val, true);
+            const float ux = x + width(sz, val) + width(sz * unitRatio, " ");
+            text(draw, sz * unitRatio, ux, yy + sz * (1 - unitRatio) * 0.92f, col, unitStr, true);
+            yy += sz * 1.0f;
+            for (auto& line : derivedLines(m1, s.v1.valid, s.v1.value,
+                                           s.cfg.sourceOn ? s.cfg.level : 0, s.cfg.loadOhm)) {
+                const float dsz = fit(H * 0.055f * fs * k, line, innerW);
+                text(draw, dsz, x, yy, mid, line, false);
+                yy += dsz * 1.15f;
+            }
+        }
+        // second reading
+        if (s.cfg.meas2 >= 0 && s.cfg.meas2 != s.cfg.meas) {
+            yy += small * k * 0.4f;
+            const Measurement m2 = kMonitorModes[s.cfg.meas2].m;
+            text(draw, small * k, x, yy, dim, kMonitorModes[s.cfg.meas2].label, false);
+            yy += small * k * 1.1f;
+            std::string unitStr, val;
+            if (s.v2.valid) val = displayValue(m2, s.v2.value, &unitStr);
+            else val = s.v2.has ? "ERROR" : "- - - -";
+            const std::string t = val + " " + unitStr;
+            const float sz = fit(H * 0.13f * fs * k, t, innerW);
+            text(draw, sz, x, yy, s.v2.has && !s.v2.valid ? warn : bright, t, true);
+            yy += sz * 1.05f;
+            auto d = derivedLines(m2, s.v2.valid, s.v2.value, s.cfg.sourceOn ? s.cfg.level : 0,
+                                  s.cfg.loadOhm);
+            for (size_t i = 0; i < d.size() && i < 2; ++i) {
+                const float dsz = fit(H * 0.045f * fs * k, d[i], innerW);
+                text(draw, dsz, x, yy, mid, d[i], false);
+                yy += dsz * 1.15f;
+            }
+        }
+        return yy - y;
+    };
+    const float need = body(1.0f, false);
+    const float room = footerTop - y;
+    body(need > room && need > 0 ? room / need : 1.0f, true);
+
+    // ---------------- scanlines
+    for (float sy = p0.y + 1; sy < p1.y; sy += 3)
+        dl->AddLine(ImVec2(p0.x + 2, sy), ImVec2(p1.x - 2, sy), IM_COL32(0, 0, 0, 50));
+
+    ImGui::InvisibleButton("##crt", size);
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        bigDisplay_ = !bigDisplay_;
+    if (!big) ImGui::SetItemTooltip("Double-click for the big display");
+}
+
 void App::drawMonitor() {
     const bool running = monitoring_;
     const float side = ImGui::GetFontSize() * 21;
@@ -801,21 +1172,38 @@ void App::drawMonitor() {
     {
         std::lock_guard<std::mutex> lk(data_);
         ImGui::PushItemWidth(-ImGui::GetFontSize() * 7.5f);
-        ImGui::SeparatorText("Measurement");
+        ImGui::SeparatorText("Readouts");
+        const int nModes = int(std::size(kMonitorModes));
         const char* labels[std::size(kMonitorModes)];
-        for (size_t i = 0; i < std::size(kMonitorModes); ++i) labels[i] = kMonitorModes[i].label;
-        changed |= ImGui::Combo("Mode", &mon_.meas, labels, int(std::size(kMonitorModes)));
+        for (int i = 0; i < nModes; ++i) labels[i] = kMonitorModes[i].label;
+        changed |= ImGui::Combo("Main", &mon_.meas, labels, nModes);
+        const char* labels2[std::size(kMonitorModes) + 1];
+        labels2[0] = "None";
+        for (int i = 0; i < nModes; ++i) labels2[i + 1] = kMonitorModes[i].label;
+        int m2 = mon_.meas2 + 1;
+        if (ImGui::Combo("Second", &m2, labels2, nModes + 1)) { mon_.meas2 = m2 - 1; changed = true; }
+        ImGui::SetItemTooltip("Alternate a second measurement with the main one, e.g. THD+N and AC level.");
+        changed |= ImGui::InputDouble("Load (ohm)", &mon_.loadOhm, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SetItemTooltip("Used for the power figure derived from AC level.");
+        if (ImGui::Checkbox("Read frequency counter", &mon_.readCounter)) changed = true;
+        helpMarker("Reads the 8903's left display (measured input frequency) with the RL/RR "
+                   "codes. Documented for the 8903B; if your 8903A doesn't answer, the app "
+                   "turns this off and shows the source frequency.");
+        const char* styles[] = {"CRT terminal", "Clean"};
+        ImGui::Combo("Display font", &crtStyle_, styles, 2);
         ImGui::SeparatorText("Source");
         changed |= ImGui::Checkbox("Source on", &mon_.sourceOn);
         changed |= ImGui::InputDouble("Frequency (Hz)", &mon_.freq, 0, 0, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue);
         changed |= ImGui::InputDouble("Level (Vrms)", &mon_.level, 0, 0, "%.4f", ImGuiInputTextFlags_EnterReturnsTrue);
         mon_.freq = std::clamp(mon_.freq, 20.0, 100000.0);
         mon_.level = std::clamp(mon_.level, 0.0, 6.0);
+        mon_.loadOhm = std::clamp(mon_.loadOhm, 0.1, 100000.0);
         ImGui::PopItemWidth();
         ImGui::SeparatorText("Filters");
         LowPass lp = mon_.lp; PlugIn hp = mon_.hp;
         drawFilterCombos(lp, hp);
         if (lp != mon_.lp || hp != mon_.hp) { mon_.lp = lp; mon_.hp = hp; changed = true; }
+        if (!running) ms_.cfg = mon_;
     }
     if (changed) ++monVersion_;
     ImGui::TextDisabled("Press Enter to apply a typed value.");
@@ -832,30 +1220,29 @@ void App::drawMonitor() {
         if (ImGui::Button("Stop monitor", ImVec2(w, 0))) monitoring_ = false;
         ImGui::PopStyleColor();
     }
+    const float hw = (w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    if (ImGui::Button("Big display", ImVec2(hw, 0))) bigDisplay_ = true;
+    ImGui::SetItemTooltip("Fill the window with the display (F for full screen, Esc to return)");
+    ImGui::SameLine();
+    if (ImGui::Button("Reset min/max", ImVec2(hw, 0))) {
+        std::lock_guard<std::mutex> lk(data_);
+        resetStats();
+    }
     ImGui::EndChild();
     ImGui::SameLine();
 
     ImGui::BeginChild("monview", ImVec2(0, 0));
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    drawCrt(ImVec2(avail.x, std::max(avail.y * 0.68f, 260.0f)), false);
     std::lock_guard<std::mutex> lk(data_);
-    ImGui::TextDisabled("%s", kMonitorModes[mon_.meas].label);
-    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 4.0f);
-    ImGui::TextColored(monValid_ ? ImVec4(0.55f, 0.95f, 0.60f, 1) : ImVec4(0.9f, 0.6f, 0.4f, 1),
-                       "%s", running || !monHistory_.empty() ? monReading_.c_str() : "-");
-    ImGui::PopFont();
-    if (monHistory_.size() > 1) {
-        double mn = *std::min_element(monHistory_.begin(), monHistory_.end());
-        double mx = *std::max_element(monHistory_.begin(), monHistory_.end());
-        ImGui::Text("min %.6g   max %.6g   span %.3g%%", mn, mx,
-                    mx != 0 ? 100.0 * (mx - mn) / std::fabs(mx) : 0.0);
-    }
     if (ImPlot::BeginPlot("##hist", ImVec2(-1, -1), ImPlotFlags_NoTitle | ImPlotFlags_NoLegend)) {
         ImPlot::SetupAxes("readings", kMonitorModes[mon_.meas].label,
                           ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
         if (!monHistory_.empty()) {
-            ImPlotSpec s;
-            s.LineColor = ImVec4(0.55f, 0.95f, 0.60f, 1);
-            s.LineWeight = 1.5f;
-            ImPlot::PlotLine("history", monHistory_.data(), int(monHistory_.size()), 1.0, 0.0, s);
+            ImPlotSpec sp;
+            sp.LineColor = ImVec4(0.35f, 1.0f, 0.5f, 1);
+            sp.LineWeight = 1.5f;
+            ImPlot::PlotLine("history", monHistory_.data(), int(monHistory_.size()), 1.0, 0.0, sp);
         }
         ImPlot::EndPlot();
     }

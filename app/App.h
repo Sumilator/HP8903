@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Settings.h"
+#include "imgui.h"
 #include "Worker.h"
 
 #include "gpib/Transport.h"
@@ -12,6 +13,7 @@
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -39,6 +41,11 @@ public:
     // Developer self-test: HP8903_SELFTEST=fr|thd|volt|power|monitor drives
     // the UI against the simulator, screenshots, then asks to quit.
     bool selfTestDone() const { return selfTestDone_; }
+    void setFonts(ImFont* mono, ImFont* vt) { monoFont_ = mono; vtFont_ = vt; }
+    // Main loop polls these to switch OS full-screen on/off.
+    bool takeFullscreenToggle() { bool t = fullscreenToggle_; fullscreenToggle_ = false; return t; }
+    bool bigDisplay() const { return bigDisplay_; }
+    void leaveBigDisplay() { bigDisplay_ = false; }
 
 private:
     // UI sections
@@ -94,20 +101,43 @@ private:
     hp8903::Trigger trigger_ = hp8903::Trigger::FreeRun;
     double readTimeout_ = 15;
 
-    // Monitor
+    // Monitor / front-panel display
     std::atomic<bool> monitoring_{false};
     struct MonitorCfg {
         double freq = 1000, level = 1.0;
-        int meas = 0;   // index into kMonitorModes
+        int meas = 0;         // index into kMonitorModes
+        int meas2 = -1;       // second readout, -1 = none
+        double loadOhm = 8;   // for power derived from AC level
+        bool readCounter = false;   // RL/RR left-display (frequency) read
         hp8903::LowPass lp = hp8903::LowPass::Off;
         hp8903::PlugIn hp = hp8903::PlugIn::Off;
         bool sourceOn = true;
     } mon_;
     std::atomic<int> monVersion_{0};
-    std::string monReading_ = "-";
+    struct MonValue {
+        bool has = false, valid = false;
+        double value = 0;
+        std::string raw;
+    };
+    struct MonState {
+        MonValue v1, v2;
+        double counterHz = NAN;    // measured input frequency, if available
+        bool counterFailed = false;
+        double rate = 0;           // readings per second
+        double mn = 0, mx = 0, sum = 0;
+        int n = 0;
+        MonitorCfg cfg;            // settings the readings were taken with
+    } ms_;
     std::vector<double> monHistory_;
-    double monLast_ = 0;
-    bool monValid_ = false;
+    void resetStats();
+
+    // CRT display
+    void drawCrt(const ImVec2& size, bool big);
+    bool bigDisplay_ = false;
+    bool fullscreenToggle_ = false;
+    ImFont* monoFont_ = nullptr;
+    ImFont* vtFont_ = nullptr;
+    int crtStyle_ = 0;   // 0 CRT terminal (VT323), 1 clean (Cousine)
 
     // Instrument naming (8903A: H1 = 400 Hz HP, H2 = optional weighting)
     char h1Name_[32] = "400 Hz HP";
