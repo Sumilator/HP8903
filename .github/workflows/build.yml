@@ -39,3 +39,33 @@ jobs:
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build -j 4
       - run: ctest --test-dir build --output-on-failure
+
+  # Every successful build on main replaces the "latest" pre-release, so the
+  # newest Mac app is always at .../releases/tag/latest with a plain download link.
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [macos-universal, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: HP8903-macos-universal
+          path: dist
+      - name: Publish "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/HP8903-mac.zip dist/hp8903-cli \
+            --target "${{ github.sha }}" --prerelease \
+            --title "Latest build ($(echo ${{ github.sha }} | cut -c1-7))" \
+            --notes "Automatic build of main. Universal (Intel + Apple silicon), macOS 10.13+.
+
+          1. Download HP8903-mac.zip, unzip, move HP8903.app to Applications.
+          2. Once, in Terminal: xattr -dr com.apple.quarantine /Applications/HP8903.app
+          3. Open it. Pick 'Simulated HP 8903' to try it without hardware.
+
+          hp8903-cli is the command-line tester (chmod +x hp8903-cli first)."
