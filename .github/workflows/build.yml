@@ -17,16 +17,25 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Check architectures
-        run: lipo -info build/hp8903-cli
+        run: |
+          lipo -info build/hp8903-cli
+          lipo -info build/HP8903.app/Contents/MacOS/HP8903
+      - name: Sign (ad-hoc) and package
+        run: |
+          codesign --force --deep --sign - build/HP8903.app
+          mkdir -p dist
+          ditto -c -k --keepParent build/HP8903.app dist/HP8903-mac.zip
+          cp build/hp8903-cli dist/
       - uses: actions/upload-artifact@v4
         with:
-          name: hp8903-cli-macos-universal
-          path: build/hp8903-cli
+          name: HP8903-macos-universal
+          path: dist/
 
   linux:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build -j 4
       - run: ctest --test-dir build --output-on-failure

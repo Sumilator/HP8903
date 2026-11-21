@@ -4,8 +4,9 @@ A self-contained application for controlling the **HP 8903A / 8903B Audio
 Analyzer** over GPIB on macOS (Intel and Apple silicon, 10.13+) and, later,
 Windows 7–11. No NI-488.2, no VISA, no HP VEE runtime.
 
-**Status: stage 1 — driver, instrument layer and command-line tester.**
-The graphical app comes next, on top of this core.
+**Status: stage 2 — the app.** It has frequency response, THD+N, voltage and
+power sweeps (four traces per tab), a live monitor, and a raw-command console.
+It runs against a built-in simulator; it has not yet been tried on real hardware.
 
 ## Why another one?
 
@@ -32,15 +33,31 @@ The graphical app comes next, on top of this core.
 On a Mac, **NI-488.2 must not be installed**. Its kernel extension would claim
 the adapter before this program can.
 
-## First test on real hardware
+## Getting the Mac app
 
-1. Download `hp8903-cli` from the latest **build** run under GitHub Actions
-   (artifact `hp8903-cli-macos-universal`), or build it yourself (below).
-2. Clear the download quarantine and make it executable:
+1. On GitHub, open the repo's **Actions** tab, then the latest green **build**
+   run. Download the artifact `HP8903-macos-universal`. It holds
+   `HP8903-mac.zip` (the app) and `hp8903-cli`.
+2. Unzip, move **HP8903.app** to Applications, then clear the download
+   quarantine once (the app isn't notarised by Apple):
    ```
-   xattr -d com.apple.quarantine hp8903-cli; chmod +x hp8903-cli
+   xattr -dr com.apple.quarantine /Applications/HP8903.app
    ```
-3. With the adapter plugged in:
+3. Choose **Simulated HP 8903** to try it without hardware, or your NI adapter.
+
+Exports (CSV) and screenshots go to `~/Documents/HP8903/`. Settings are kept in
+`~/Library/Application Support/HP8903/`.
+
+### Filters
+
+On the 8903A, H1 is the built-in 400 Hz high-pass and H2 is the optional
+weighting filter (A-weighting here). On the 8903B, H1 and H2 are the
+left and right plug-in slots. The names are editable under **Instrument...**.
+
+## First test on real hardware (command line)
+
+`hp8903-cli` isolates the driver from the UI. Clear its quarantine and make
+it executable (`xattr -d com.apple.quarantine hp8903-cli; chmod +x hp8903-cli`), then:
    ```
    ./hp8903-cli list        # adapter detected?
    ./hp8903-cli probe       # driver talks to the adapter, becomes CIC
@@ -54,7 +71,8 @@ the adapter before this program can.
 ## Building
 
 Requires CMake 3.20+ and a C++17 compiler (Xcode command-line tools on Mac).
-libusb is downloaded and built automatically as a static library.
+libusb, GLFW, Dear ImGui, ImPlot and stb are downloaded and built
+automatically, so the result is a single self-contained app.
 
 ```
 cmake -S . -B build
@@ -69,6 +87,7 @@ On macOS this produces a universal (arm64 + x86_64) binary for 10.13+.
 ```
 core/gpib/       Transport interface, NI GPIB-USB driver, simulator
 core/hp8903/     8903 program codes, reading parser, sweep engine
+app/             Dear ImGui + ImPlot application (GLFW / OpenGL)
 tools/           hp8903-cli
 tests/           packet-framing, parser and sweep tests (no hardware needed)
 ```

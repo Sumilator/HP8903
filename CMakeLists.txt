@@ -63,6 +63,57 @@ endif()
 add_executable(hp8903-cli tools/hp8903_cli.cpp)
 target_link_libraries(hp8903-cli PRIVATE hp8903core)
 
+# ---------------------------------------------------------------- GUI
+option(HP8903_BUILD_APP "Build the graphical application" ON)
+if(HP8903_BUILD_APP)
+  include(FetchContent)
+  set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(glfw GIT_REPOSITORY https://github.com/glfw/glfw.git
+                       GIT_TAG 3.4 GIT_SHALLOW TRUE)
+  FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git
+                       GIT_TAG v1.93.0 GIT_SHALLOW TRUE)
+  FetchContent_Declare(implot GIT_REPOSITORY https://github.com/epezent/implot.git
+                       GIT_TAG v1.1 GIT_SHALLOW TRUE)
+  FetchContent_Declare(stb GIT_REPOSITORY https://github.com/nothings/stb.git
+                       GIT_TAG 6b5799bae8a1fe3792691ef4b72ae26434c3e799)
+  FetchContent_MakeAvailable(glfw imgui implot stb)   # the last three are source-only
+
+  find_package(OpenGL REQUIRED)
+  add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    ${implot_SOURCE_DIR}/implot.cpp ${implot_SOURCE_DIR}/implot_items.cpp)
+  target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends
+                             ${implot_SOURCE_DIR} ${stb_SOURCE_DIR})
+  target_compile_definitions(imgui PUBLIC GL_SILENCE_DEPRECATION)
+  target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+
+  set(FONT_H ${CMAKE_BINARY_DIR}/generated/font_roboto.h)
+  add_custom_command(OUTPUT ${FONT_H}
+    COMMAND ${CMAKE_COMMAND} -DIN=${imgui_SOURCE_DIR}/misc/fonts/Roboto-Medium.ttf
+            -DOUT=${FONT_H} -DNAME=kRobotoTtf -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+    DEPENDS ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
+
+  add_executable(HP8903 WIN32 MACOSX_BUNDLE app/main.cpp app/App.cpp ${FONT_H})
+  target_include_directories(HP8903 PRIVATE ${CMAKE_BINARY_DIR}/generated)
+  target_link_libraries(HP8903 PRIVATE hp8903core imgui)
+  if(APPLE)
+    set_target_properties(HP8903 PROPERTIES
+      MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/app/Info.plist.in
+      OUTPUT_NAME HP8903)
+  endif()
+  if(MSVC)
+    set_property(TARGET HP8903 PROPERTY LINK_FLAGS "/ENTRY:mainCRTStartup")
+  endif()
+endif()
+
 # ---------------------------------------------------------------- tests
 if(HP8903_BUILD_TESTS)
   enable_testing()
