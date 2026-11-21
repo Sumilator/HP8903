@@ -6,43 +6,79 @@
 //   Linux   ~/.config/hp8903/settings.ini
 #pragma once
 
+#include <cerrno>
 #include <cstdlib>
-#include <filesystem>
 #include <fstream>
 #include <map>
 #include <string>
+#include <sys/stat.h>
+#if defined(_WIN32)
+#include <direct.h>
+#endif
 
-namespace fs = std::filesystem;
+// Plain string paths: std::filesystem needs macOS 10.15, we support 10.13.
+#if defined(_WIN32)
+constexpr char kSep = '\\';
+#else
+constexpr char kSep = '/';
+#endif
 
-inline fs::path configDir() {
+inline std::string joinPath(const std::string& a, const std::string& b) {
+    if (a.empty()) return b;
+    return (a.back() == '/' || a.back() == '\\') ? a + b : a + kSep + b;
+}
+
+inline std::string parentDir(const std::string& p) {
+    auto i = p.find_last_of("/\\");
+    return i == std::string::npos ? std::string(".") : p.substr(0, i);
+}
+
+// mkdir -p
+inline bool makeDirs(const std::string& path) {
+    std::string cur;
+    for (size_t i = 0; i <= path.size(); ++i) {
+        if (i == path.size() || ((path[i] == '/' || path[i] == '\\') && i > 0)) {
+            cur = path.substr(0, i);
+            if (cur.size() == 2 && cur[1] == ':') continue;   // "C:"
+#if defined(_WIN32)
+            int r = _mkdir(cur.c_str());
+#else
+            int r = mkdir(cur.c_str(), 0755);
+#endif
+            if (r != 0 && errno != EEXIST) return false;
+        }
+    }
+    return true;
+}
+
+inline std::string configDir() {
 #if defined(_WIN32)
     const char* a = std::getenv("APPDATA");
-    return fs::path(a ? a : ".") / "HP8903";
+    return joinPath(a ? a : ".", "HP8903");
 #elif defined(__APPLE__)
     const char* h = std::getenv("HOME");
-    return fs::path(h ? h : ".") / "Library" / "Application Support" / "HP8903";
+    return joinPath(h ? h : ".", "Library/Application Support/HP8903");
 #else
     const char* x = std::getenv("XDG_CONFIG_HOME");
     const char* h = std::getenv("HOME");
-    return x ? fs::path(x) / "hp8903" : fs::path(h ? h : ".") / ".config" / "hp8903";
+    return x ? joinPath(x, "hp8903") : joinPath(h ? h : ".", ".config/hp8903");
 #endif
 }
 
-inline fs::path documentsDir() {
+inline std::string documentsDir() {
 #if defined(_WIN32)
     const char* u = std::getenv("USERPROFILE");
-    fs::path base = u ? fs::path(u) : fs::path(".");
+    return joinPath(joinPath(u ? u : ".", "Documents"), "HP8903");
 #else
     const char* h = std::getenv("HOME");
-    fs::path base = h ? fs::path(h) : fs::path(".");
+    return joinPath(h ? h : ".", "Documents/HP8903");
 #endif
-    return base / "Documents" / "HP8903";
 }
 
 class Settings {
 public:
     void load() {
-        std::ifstream f(configDir() / "settings.ini");
+        std::ifstream f(joinPath(configDir(), "settings.ini"));
         std::string line;
         while (std::getline(f, line)) {
             auto p = line.find('=');
@@ -50,9 +86,8 @@ public:
         }
     }
     void save() const {
-        std::error_code ec;
-        fs::create_directories(configDir(), ec);
-        std::ofstream f(configDir() / "settings.ini");
+        makeDirs(configDir());
+        std::ofstream f(joinPath(configDir(), "settings.ini"));
         for (auto& [k, v] : kv_) f << k << '=' << v << '\n';
     }
     std::string get(const std::string& k, const std::string& d) const {

@@ -439,21 +439,19 @@ void App::exportCsv(SweepKind kind) {
             }
     }
     if (res.empty()) { log("Nothing to export yet."); return; }
-    std::error_code ec;
-    fs::create_directories(documentsDir(), ec);
+    makeDirs(documentsDir());
     static const char* slug[kKinds] = {"freq-response", "thdn", "voltage",
                                        "power-vs-level", "power-vs-freq"};
-    fs::path p = documentsDir() / (std::string(slug[int(kind)]) + "_" + nowStamp() + ".csv");
+    std::string p = joinPath(documentsDir(), std::string(slug[int(kind)]) + "_" + nowStamp() + ".csv");
     std::ofstream(p) << toCsv(res, names);
-    log("Saved " + p.string());
-    reveal(p.string());
+    log("Saved " + p);
+    reveal(p);
 }
 
 std::string App::screenshotPath() const {
     if (const char* p = std::getenv("HP8903_SHOT")) return p;
-    std::error_code ec;
-    fs::create_directories(documentsDir(), ec);
-    return (documentsDir() / ("hp8903_" + nowStamp() + ".png")).string();
+    makeDirs(documentsDir());
+    return joinPath(documentsDir(), "hp8903_" + nowStamp() + ".png");
 }
 
 void App::screenshotSaved(const std::string& path) {
@@ -467,7 +465,7 @@ void App::reveal(const std::string& path) {
 #elif defined(_WIN32)
     std::string cmd = "explorer /select,\"" + path + "\"";
 #else
-    std::string cmd = "xdg-open \"" + fs::path(path).parent_path().string() + "\" >/dev/null 2>&1 &";
+    std::string cmd = "xdg-open \"" + parentDir(path) + "\" >/dev/null 2>&1 &";
 #endif
     if (std::system(cmd.c_str()) != 0) {}
 }
