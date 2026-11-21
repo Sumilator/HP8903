@@ -41,7 +41,7 @@ public:
     // Developer self-test: HP8903_SELFTEST=fr|thd|volt|power|monitor drives
     // the UI against the simulator, screenshots, then asks to quit.
     bool selfTestDone() const { return selfTestDone_; }
-    void setFonts(ImFont* mono, ImFont* vt) { monoFont_ = mono; vtFont_ = vt; }
+    void setLabelFont(ImFont* f) { labelFont_ = f; }
     // Main loop polls these to switch OS full-screen on/off.
     bool takeFullscreenToggle() { bool t = fullscreenToggle_; fullscreenToggle_ = false; return t; }
     bool bigDisplay() const { return bigDisplay_; }
@@ -131,13 +131,11 @@ private:
     std::vector<double> monHistory_;
     void resetStats();
 
-    // CRT display
+    // Front-panel display (red LED digits + green labels)
     void drawCrt(const ImVec2& size, bool big);
     bool bigDisplay_ = false;
     bool fullscreenToggle_ = false;
-    ImFont* monoFont_ = nullptr;
-    ImFont* vtFont_ = nullptr;
-    int crtStyle_ = 0;   // 0 CRT terminal (VT323), 1 clean (Cousine)
+    ImFont* labelFont_ = nullptr;   // B612 Mono, for the green panel text
 
     // Instrument naming (8903A: H1 = 400 Hz HP, H2 = optional weighting)
     char h1Name_[32] = "400 Hz HP";

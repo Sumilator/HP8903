@@ -101,19 +101,13 @@ if(HP8903_BUILD_APP)
             -DOUT=${FONT_H} -DNAME=kRobotoTtf -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
     DEPENDS ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
 
-  set(MONO_H ${CMAKE_BINARY_DIR}/generated/font_mono.h)
-  add_custom_command(OUTPUT ${MONO_H}
-    COMMAND ${CMAKE_COMMAND} -DIN=${imgui_SOURCE_DIR}/misc/fonts/Cousine-Regular.ttf
-            -DOUT=${MONO_H} -DNAME=kMonoTtf -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
-    DEPENDS ${CMAKE_SOURCE_DIR}/cmake/embed.cmake)
+  set(LABEL_H ${CMAKE_BINARY_DIR}/generated/font_b612mono.h)
+  add_custom_command(OUTPUT ${LABEL_H}
+    COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/app/fonts/B612Mono-Regular.ttf
+            -DOUT=${LABEL_H} -DNAME=kB612MonoTtf -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+    DEPENDS ${CMAKE_SOURCE_DIR}/cmake/embed.cmake ${CMAKE_SOURCE_DIR}/app/fonts/B612Mono-Regular.ttf)
 
-  set(VT_H ${CMAKE_BINARY_DIR}/generated/font_vt323.h)
-  add_custom_command(OUTPUT ${VT_H}
-    COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_SOURCE_DIR}/app/fonts/VT323-Regular.ttf
-            -DOUT=${VT_H} -DNAME=kVt323Ttf -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
-    DEPENDS ${CMAKE_SOURCE_DIR}/cmake/embed.cmake ${CMAKE_SOURCE_DIR}/app/fonts/VT323-Regular.ttf)
-
-  add_executable(HP8903 WIN32 MACOSX_BUNDLE app/main.cpp app/App.cpp ${FONT_H} ${MONO_H} ${VT_H})
+  add_executable(HP8903 WIN32 MACOSX_BUNDLE app/main.cpp app/App.cpp ${FONT_H} ${LABEL_H})
   target_include_directories(HP8903 PRIVATE ${CMAKE_BINARY_DIR}/generated)
   target_link_libraries(HP8903 PRIVATE hp8903core imgui)
   if(APPLE)

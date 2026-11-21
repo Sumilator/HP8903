@@ -94,8 +94,9 @@ tests/           packet-framing, parser and sweep tests (no hardware needed)
 
 ## Front-panel display
 
-The **Monitor** tab has a CRT-style readout of the 8903 that you can read from
-across the bench. It shows a main reading plus an optional second one that
+The **Monitor** tab mirrors the 8903's front panel so it can be read from
+across the bench. Readings are red seven-segment LEDs, frequency on the left and
+the measurement on the right, and the other figures are in green. It shows a main reading plus an optional second one that
 alternates with it (for example THD+N and AC level), and figures derived from
 them:
 
@@ -113,7 +114,7 @@ if an 8903A doesn't answer, the display shows the source frequency instead.
 
 GPL-2.0. The NI GPIB-USB protocol is ported from the Linux kernel driver
 `drivers/gpib/ni_usb/ni_usb_gpib.c`, © 2004 Frank Mori Hess, GPL-2.0.
-The VT323 font (app/fonts) is by The VT323 Project Authors, SIL Open Font
-Licence 1.1 (see app/fonts/VT323-OFL.txt).
+The B612 Mono font (app/fonts) is by The B612 Project Authors, SIL Open Font
+Licence 1.1 (see app/fonts/B612-OFL.txt).
 The 8903 measurement sequences follow Pete Millett's VEE programs, as
 documented by pvdm's Python port. No code from either was copied.

@@ -24,8 +24,7 @@
 #include "stb_image_write.h"
 
 #include "font_roboto.h"   // generated at build time
-#include "font_mono.h"
-#include "font_vt323.h"
+#include "font_b612mono.h"
 
 #include <cstdio>
 #include <vector>
@@ -115,15 +114,14 @@ int main(int, char**) {
     ImFontConfig fc;
     fc.FontDataOwnedByAtlas = false;
     io.Fonts->AddFontFromMemoryTTF((void*)kRobotoTtf, int(sizeof kRobotoTtf), 15.0f, &fc);
-    ImFont* mono = io.Fonts->AddFontFromMemoryTTF((void*)kMonoTtf, int(sizeof kMonoTtf), 15.0f, &fc);
-    ImFont* vt = io.Fonts->AddFontFromMemoryTTF((void*)kVt323Ttf, int(sizeof kVt323Ttf), 15.0f, &fc);
+    ImFont* label = io.Fonts->AddFontFromMemoryTTF((void*)kB612MonoTtf, int(sizeof kB612MonoTtf), 15.0f, &fc);
 
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init(glsl);
 
     {
         App app;
-        app.setFonts(mono, vt);
+        app.setLabelFont(label);
         bool fullscreen = false;
         int wx = 0, wy = 0, ww = 1280, wh = 800;
         auto setFullscreen = [&](bool on) {
